@@ -42,7 +42,7 @@ def bm25_retrieval(data, use_raw_texts, use_doc_indices):
         op = dict()
         query = d["raw_text"] if use_raw_texts else d["clean_text"]
         op["claim"] = query
-        op["actual_doc_id"] = d["doc_ids"]
+        op["actual_doc_id"] = d["joint_ids"]
         hits = searcher.search(query, TOPK)
         
         docs = []
