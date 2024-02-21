@@ -6,8 +6,10 @@
 
 python -m pyserini.index.lucene \
   --collection JsonCollection \
-  --input preprocessing/pyserini_format_jsons \
-  --index retrievers/bm25/bm25_indices \
+  --input preprocessing/pyserini_format_passages_clean_texts \
+  --index retrievers/bm25/doc_indices/from_clean_texts \
   --generator DefaultLuceneDocumentGenerator \
   --threads 1 \
-  --storePositions --storeDocvectors --storeRaw
+  --storePositions \
+  --storeDocvectors \
+  --storeRaw
