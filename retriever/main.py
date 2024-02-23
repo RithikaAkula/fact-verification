@@ -5,35 +5,22 @@ from tqdm import tqdm
 TOPK = 10
 
 
-def perform_retrieval(data, use_raw_texts, use_doc_indices, base_dir):
+def bm25_retrieval(data, use_raw_texts, use_doc_indices, base_dir):
     
-    from pyserini.search.lucene import LuceneSearcher
-
     print("loading bm25 doc indices..." if use_doc_indices else "loading bm25 passage indices...")
     
     if use_doc_indices:
         parent_dir = f"{base_dir}/doc_indices"
-        searcher = LuceneSearcher(f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts')
+        indices_path = f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts'
     else:
         parent_dir = f"{base_dir}/passage_indices"
-        searcher = LuceneSearcher(f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts')
-   
-    # TO FINE-TUNE:
-    '''
-        k1 : float 
-            BM25 k1 parameter.
-            optimal range: (0.3, 0.9)
-        b : float
-            BM25 b parameter.
-            range allowed: (0, 1)
+        indices_path = f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts'
+    
+    from pyserini.search.lucene import LuceneSearcher
+    searcher = LuceneSearcher(indices_path)
 
-        general values used: (1.5, 0.75)
-        - on clean texts: (0.2, 0.05) - 0.03839
-        - raw texts: (0.001, 0.5)
-    '''
     searcher.set_bm25(0.001, 0.5)
-
-    print("running bm25 retrieval...")
+    print("Running bm25 retrieval...")
 
     top_k_docs = dict()
     top_k_docs["claims"] = []
@@ -71,6 +58,56 @@ def perform_retrieval(data, use_raw_texts, use_doc_indices, base_dir):
         del op
     
     return top_k_docs
+
+
+def dpr_retrieval(data, use_raw_texts, use_doc_indices, base_dir):
+
+    print("loading faiss doc indices..." if use_doc_indices else "loading faiss passage indices...")
+    
+    if use_doc_indices:
+        parent_dir = f"{base_dir}/doc_indices"
+        indices_path = f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts'
+    else:
+        parent_dir = f"{base_dir}/passage_indices"
+        indices_path = f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts'
+    
+    from pyserini.search import FaissSearcher
+    searcher = FaissSearcher(indices_path, 'facebook/dpr-question_encoder-multiset-base')
+    print("Running DPR retrieval...")
+
+    top_k_docs = dict()
+    top_k_docs["claims"] = []
+
+    for d in tqdm(data):
+        op = dict()
+        query = d["raw_text"] if use_raw_texts else d["clean_text"]
+        op["claim"] = query
+        op["actual_ids"] = d["joint_ids"]
+        hits = searcher.search(query)
+        
+        docs = []
+        for i in range(len(hits)):
+            if use_doc_indices:
+                docs.append({
+                    "rank": i+1,
+                    "doc_id": hits[i].docid,
+                    "score": f"{hits[i].score:.5f}",
+                })
+            else:
+                ids = hits[i].docid.split("_")
+                docs.append({
+                    "rank": i+1,
+                    "predicted_passage_id": ids[1],
+                    "doc_id": ids[0],
+                    "joint_id": hits[i].docid,
+                    "score": f"{hits[i].score:.5f}",
+                })
+        op["docs"] = docs
+        top_k_docs["claims"].append(op)
+        del op
+    
+    return top_k_docs
+
 
 def extract_actual_predicted_ids(data, use_doc_indices):
     actual = []
@@ -150,7 +187,7 @@ if __name__ == "__main__":
     use_doc_indices = True
     use_raw_texts = False
     on_complete_fever = False
-    is_bm25 = True
+    is_bm25 = False
 
     base_dir = 'bm25' if is_bm25 else 'dpr'
 
@@ -185,7 +222,10 @@ if __name__ == "__main__":
         data = json.load(f)
 
     # PERFORM RETRIEVAL
-    top_k_docs = perform_retrieval(data, use_raw_texts, use_doc_indices, base_dir)
+    if is_bm25:
+        top_k_docs = bm25_retrieval(data, use_raw_texts, use_doc_indices, base_dir)
+    else:
+        top_k_docs = dpr_retrieval(data, use_raw_texts, use_doc_indices, base_dir)
 
     # STORE RETRIEVAL RESULTS
     with open(output_file_path, 'w') as json_file:
