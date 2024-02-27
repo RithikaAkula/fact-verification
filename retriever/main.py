@@ -1,112 +1,9 @@
 import json
 import os
 from tqdm import tqdm
+import pandas as pd
 
 TOPK = 10
-
-
-def bm25_retrieval(data, use_raw_texts, use_doc_indices, base_dir):
-    
-    print("loading bm25 doc indices..." if use_doc_indices else "loading bm25 passage indices...")
-    
-    if use_doc_indices:
-        parent_dir = f"{base_dir}/doc_indices"
-        indices_path = f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts'
-    else:
-        parent_dir = f"{base_dir}/passage_indices"
-        indices_path = f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts'
-    
-    from pyserini.search.lucene import LuceneSearcher
-    searcher = LuceneSearcher(indices_path)
-
-    searcher.set_bm25(0.001, 0.5)
-    print("Running bm25 retrieval...")
-
-    top_k_docs = dict()
-    top_k_docs["claims"] = []
-
-    for d in tqdm(data):
-        op = dict()
-        query = d["raw_text"] if use_raw_texts else d["clean_text"]
-        op["claim"] = query
-        op["actual_ids"] = d["joint_ids"]
-        hits = searcher.search(query, TOPK)
-        
-        docs = []
-        for i in range(len(hits)):
-            doc = searcher.doc(str(hits[i].docid))
-            doc_contents = json.loads(doc.raw())
-            if use_doc_indices:
-                docs.append({
-                    "rank": i+1,
-                    "predicted_doc": doc_contents["contents"],
-                    "doc_id": doc.id(),
-                    "score": f"{hits[i].score:.5f}",
-                })
-            else:
-                ids = doc.id().split("_")
-                docs.append({
-                    "rank": i+1,
-                    "predicted_passage": doc_contents["contents"],
-                    "predicted_passage_id": ids[1],
-                    "doc_id": ids[0],
-                    "joint_id": doc.id(),
-                    "score": f"{hits[i].score:.5f}",
-                })
-        op["docs"] = docs
-        top_k_docs["claims"].append(op)
-        del op
-    
-    return top_k_docs
-
-
-def dpr_retrieval(data, use_raw_texts, use_doc_indices, base_dir):
-
-    print("loading faiss doc indices..." if use_doc_indices else "loading faiss passage indices...")
-    
-    if use_doc_indices:
-        parent_dir = f"{base_dir}/doc_indices"
-        indices_path = f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts'
-    else:
-        parent_dir = f"{base_dir}/passage_indices"
-        indices_path = f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts'
-    
-    from pyserini.search import FaissSearcher
-    searcher = FaissSearcher(indices_path, 'facebook/dpr-question_encoder-multiset-base')
-    print("Running DPR retrieval...")
-
-    top_k_docs = dict()
-    top_k_docs["claims"] = []
-
-    for d in tqdm(data):
-        op = dict()
-        query = d["raw_text"] if use_raw_texts else d["clean_text"]
-        op["claim"] = query
-        op["actual_ids"] = d["joint_ids"]
-        hits = searcher.search(query)
-        
-        docs = []
-        for i in range(len(hits)):
-            if use_doc_indices:
-                docs.append({
-                    "rank": i+1,
-                    "doc_id": hits[i].docid,
-                    "score": f"{hits[i].score:.5f}",
-                })
-            else:
-                ids = hits[i].docid.split("_")
-                docs.append({
-                    "rank": i+1,
-                    "predicted_passage_id": ids[1],
-                    "doc_id": ids[0],
-                    "joint_id": hits[i].docid,
-                    "score": f"{hits[i].score:.5f}",
-                })
-        op["docs"] = docs
-        top_k_docs["claims"].append(op)
-        del op
-    
-    return top_k_docs
 
 
 def extract_actual_predicted_ids(data, use_doc_indices):
@@ -114,24 +11,18 @@ def extract_actual_predicted_ids(data, use_doc_indices):
     predicted = []
 
     # Iterate over claims
-    for claim_data in data["claims"]:
+    for claim_id, claim_data in data.items():
         
-        # ignore NEI rows
-        if claim_data['actual_ids'] == []:
-            continue
-
         # Extract the ground truth doc_ids list
-        actual_ids = claim_data["actual_ids"]
-        if use_doc_indices:
-            actual_ids = [value.split('_')[0] for value in actual_ids]
-        
+        actual_ids = claim_data["ground_truth_docs"]
+
+        # ignore NEI rows
+        if len(actual_ids) == 0:
+            continue
         actual.append(actual_ids)
 
         # Extract predicted_ids while preserving order based on rank
-        if use_doc_indices:
-            predicted_ids = [doc["doc_id"] for doc in sorted(claim_data["docs"], key=lambda x: x["rank"])]
-        else:
-            predicted_ids = [doc["joint_id"] for doc in sorted(claim_data["docs"], key=lambda x: x["rank"])]
+        predicted_ids = claim_data['predicted_docs']
         predicted.append(predicted_ids)
 
     return actual, predicted
@@ -182,9 +73,149 @@ def hits_ratio_at_k(actual, predicted, k=10):
     return hits / len(actual)
 
 
+def dpr_retrieval(data, use_raw_texts, use_doc_indices, base_dir):
+
+    print("loading faiss doc indices..." if use_doc_indices else "loading faiss passage indices...")
+    
+    if use_doc_indices:
+        parent_dir = f"{base_dir}/doc_indices"
+        indices_path = f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts'
+    else:
+        parent_dir = f"{base_dir}/passage_indices"
+        indices_path = f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts'
+    
+    from pyserini.search import FaissSearcher
+    searcher = FaissSearcher(indices_path, 'facebook/dpr-question_encoder-multiset-base')
+    print("Running DPR retrieval...")
+
+    claims = dict()
+
+    for d in tqdm(data):
+        op = dict() 
+        query = d["raw_text"] if use_raw_texts else d["clean_text"]
+        op["claim"] = query
+        op["label"] = d["label"]
+        ground_truth_doc_ids = list(d["joint_ids"])
+        if use_doc_indices:
+            ground_truth_doc_ids = list(set([value.split('_')[0] for value in ground_truth_doc_ids]))
+
+        hits = searcher.search(query)
+        
+        predicted_doc_ids = []
+
+        for i in range(len(hits)):
+            predicted_doc_ids.append(str(hits[i].docid))
+            
+        op['ground_truth_docs'] = ground_truth_doc_ids
+        op['predicted_docs'] = predicted_doc_ids
+        
+        claims[d["claim_id"]] = op 
+
+        del op
+    
+    return claims
+
+
+def bm25_retrieval(data, use_raw_texts, use_doc_indices, base_dir):
+    
+    print("loading bm25 doc indices..." if use_doc_indices else "loading bm25 passage indices...")
+    
+    if use_doc_indices:
+        parent_dir = f"{base_dir}/doc_indices"
+        indices_path = f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts'
+    else:
+        parent_dir = f"{base_dir}/passage_indices"
+        indices_path = f'{parent_dir}/from_raw_texts' if use_raw_texts else f'{parent_dir}/from_clean_texts'
+    
+    from pyserini.search.lucene import LuceneSearcher
+    searcher = LuceneSearcher(indices_path)
+
+    searcher.set_bm25(0.001, 0.5)
+    print("Running bm25 retrieval...")
+
+    claims = dict()
+
+    for d in tqdm(data):
+        query = d["raw_text"] if use_raw_texts else d["clean_text"]
+        op = dict()
+        op["claim"] = query
+        op["label"] = d["label"]
+        
+        ground_truth_doc_ids = list(d["joint_ids"])
+        if use_doc_indices:
+            ground_truth_doc_ids = list(set([value.split('_')[0] for value in ground_truth_doc_ids]))
+
+        hits = searcher.search(query, TOPK)
+        
+        predicted_doc_ids = []
+
+        for i in range(len(hits)):
+            doc = searcher.doc(str(hits[i].docid))
+            # doc_contents = json.loads(doc.raw())
+            predicted_doc_ids.append(doc.id())
+        
+        op['ground_truth_docs'] = ground_truth_doc_ids
+        op['predicted_docs'] = predicted_doc_ids
+        
+        claims[d["claim_id"]] = op 
+
+        del op
+    
+    return claims
+
+
+def get_doc_by_id(doc_ids, use_doc_indices, use_raw_texts):
+
+    dirs = os.path.abspath(os.curdir).split("/")
+    curr_path = "/".join(dirs[:-1])
+    wiki_df_folder_path = curr_path + ('/preprocessing/wiki_docs_parquets' if use_doc_indices else '/preprocessing/wiki_passages_parquets_2')
+    files = [wiki_df_folder_path + "/" + name for name in sorted(os.listdir(wiki_df_folder_path))]
+
+    docs_list = []
+
+    for file in files:
+        df = pd.read_parquet(file)
+        # Filter the DataFrame to include only rows with joint_id in joint_ids
+        filtered_df = df[df['doc_id'].astype(str).isin(doc_ids)] if use_doc_indices else df[df['joint_id'].isin(doc_ids)]
+
+        for index, row in filtered_df.iterrows(): 
+            doc_dict = dict() 
+            if use_doc_indices:
+                doc_dict['wiki_title'] = " ".join(str(row['title']).split("_")) # to replace underscores in title with spaces
+                doc_dict['evidence_doc'] = str(row['raw_text']) if use_raw_texts else str(row['clean_text'])
+                doc_dict['doc_id'] = str(row['doc_id'])
+            else:
+                doc_dict['wiki_title'] = " ".join(str(row['title']).split("_")) # to replace underscores in title with spaces
+                doc_dict['evidence_sentence'] = str(row['raw_passage_content']) if use_raw_texts else str(row['clean_passage_content'])
+                doc_dict['doc_id'] = row['joint_id']
+            
+            docs_list.append(doc_dict)
+
+    return docs_list
+
+
+def map_passages(claims, use_doc_indices, use_raw_texts):
+    
+    # Gather all unique doc_ids
+    all_doc_ids = set()
+    for value in claims.values():
+        all_doc_ids.update(value['ground_truth_docs'])
+        all_doc_ids.update(value['predicted_docs'])
+
+    # Perform the lookup once
+    doc_lookup = get_doc_by_id(all_doc_ids, use_doc_indices, use_raw_texts)
+
+    # Replace ground_truth_doc_ids and predicted_doc_ids in my_dict with lookup dictionaries
+    for key, value in claims.items():
+        value['ground_truth_docs'] = [doc for doc in doc_lookup if doc['doc_id'] in value['ground_truth_docs']]
+        value['predicted_docs'] = [doc for doc in doc_lookup if doc['doc_id'] in value['predicted_docs']]
+
+    return claims
+
+
 if __name__ == "__main__":
     
-    use_doc_indices = True
+    use_doc_indices = False
     use_raw_texts = False
     on_complete_fever = False
     is_bm25 = False
@@ -227,13 +258,9 @@ if __name__ == "__main__":
     else:
         top_k_docs = dpr_retrieval(data, use_raw_texts, use_doc_indices, base_dir)
 
-    # STORE RETRIEVAL RESULTS
-    with open(output_file_path, 'w') as json_file:
-        json.dump(top_k_docs, json_file)
-    
     # EVALUATE PERFORMANCE
     actual, predicted = extract_actual_predicted_ids(top_k_docs, use_doc_indices)
-    
+
     print(f"MRR@{str(10)}:", reciprocal_rank_at_k(actual, predicted, 10))
     print(f"MRR@{str(5)}:", reciprocal_rank_at_k(actual, predicted, 5))
     print(f"MRR@{str(2)}:", reciprocal_rank_at_k(actual, predicted, 2))
@@ -245,4 +272,15 @@ if __name__ == "__main__":
     print(f"Precision@{str(10)}:", precision_at_k(actual, predicted, 10))
     print(f"Precision@{str(5)}:", precision_at_k(actual, predicted, 5))
     print(f"Precision@{str(2)}:", precision_at_k(actual, predicted, 2))
+
+    print("Replacing docs with document dictionaries")
+    final_claims_dict = map_passages(top_k_docs, use_doc_indices, use_raw_texts)
+
+    # STORE RETRIEVAL RESULTS
+    with open(output_file_path, 'w') as json_file:
+        json.dump(final_claims_dict, json_file)
+    
+    print("FINISH")
+    
+    
 
