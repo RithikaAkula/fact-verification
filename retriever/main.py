@@ -130,6 +130,7 @@ def bm25_retrieval(data, use_raw_texts, use_doc_indices, base_dir):
     from pyserini.search.lucene import LuceneSearcher
     searcher = LuceneSearcher(indices_path)
 
+    # general: (1.50, 0.75) current best: (0.001, 0.5)
     searcher.set_bm25(0.001, 0.5)
     print("Running bm25 retrieval...")
 
@@ -216,9 +217,9 @@ def map_passages(claims, use_doc_indices, use_raw_texts):
 if __name__ == "__main__":
     
     use_doc_indices = False
-    use_raw_texts = False
+    use_raw_texts = True
     on_complete_fever = False
-    is_bm25 = False
+    is_bm25 =  True
 
     base_dir = 'bm25' if is_bm25 else 'dpr'
 
